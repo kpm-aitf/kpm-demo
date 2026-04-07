@@ -2,33 +2,18 @@
 Workflow API — Analisis Isu & Strategi Komunikasi via OpenRouter (free models).
 Session disimpan in-memory (dict). Gunakan Redis/DB untuk produksi.
 """
-import os
 import time
 import json
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from dotenv import load_dotenv
-from pathlib import Path
-
-# Cari .env dari direktori backend ke atas (kpm/.env)
-_env_path = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(dotenv_path=_env_path if _env_path.exists() else None)
+from .settings import settings
 
 router = APIRouter(prefix="/v1/workflow", tags=["workflow"])
 
 # ── Session store (in-memory) ─────────────────────────────────────────────────
 _sessions: dict[str, dict] = {}
-
-# ── OpenRouter config ─────────────────────────────────────────────────────────
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-def _api_key() -> str:
-    return os.getenv("OPENROUTER_API_KEY", "")
-
-def _model() -> str:
-    return os.getenv("OPENROUTER_MODEL", "google/gemma-3-4b-it:free")
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -89,28 +74,27 @@ def _merge_system_to_user(messages: list[dict]) -> list[dict]:
     return merged
 
 
-async def call_openrouter(messages: list[dict], temperature: float = 0.7) -> tuple[str, int]:
+async def call_openrouter(messages: list[dict], temperature: float | None = None) -> tuple[str, int]:
     """Panggil OpenRouter dan kembalikan (teks_respons, latency_ms)."""
-    api_key = _api_key()
-    if not api_key:
+    if not settings.openrouter_api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY belum diset di .env")
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000",
-        "X-Title": "KPM AITF Platform",
+        "HTTP-Referer": settings.app_referer,
+        "X-Title": settings.app_title,
     }
     payload = {
-        "model": _model(),
+        "model": settings.openrouter_model,
         "messages": _merge_system_to_user(messages),
-        "temperature": temperature,
-        "max_tokens": 1500,
+        "temperature": temperature if temperature is not None else settings.temperature_default,
+        "max_tokens": settings.openrouter_max_tokens,
     }
 
     t0 = time.time()
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+    async with httpx.AsyncClient(timeout=settings.openrouter_timeout) as client:
+        resp = await client.post(settings.openrouter_base_url, headers=headers, json=payload)
         if resp.status_code != 200:
             raise HTTPException(status_code=resp.status_code, detail=f"OpenRouter error: {resp.text}")
         data = resp.json()
@@ -364,7 +348,7 @@ Tulis executive brief dalam 3-4 paragraf, bahasa Indonesia, formal dan profesion
     ]
 
     try:
-        raw, latency = await call_openrouter(messages, temperature=0.6)
+        raw, latency = await call_openrouter(messages, temperature=settings.temperature_revise)
         revised_draft = raw.strip()
     except HTTPException:
         raise
@@ -430,7 +414,7 @@ async def chat(req: ChatRequest):
     )
 
     history_msgs = []
-    for h in req.chat_history[-6:]:
+    for h in req.chat_history[-settings.chat_history_limit:]:
         role = h.get("role", "user")
         history_msgs.append({"role": role, "content": h.get("content", "")})
 
@@ -446,7 +430,7 @@ async def chat(req: ChatRequest):
     ]
 
     try:
-        reply, latency = await call_openrouter(messages, temperature=0.75)
+        reply, latency = await call_openrouter(messages, temperature=settings.temperature_chat)
     except HTTPException as e:
         return {
             "status":     "error",
