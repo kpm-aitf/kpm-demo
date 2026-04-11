@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers.tim2 import router as tim2_router
 from app.routers.tim3 import router as tim3_router
 from app.routers.orchestrator import router as orchestrator_router
+from app.settings import settings
+from app.workflow import router as workflow_router
+from app.dashboard import router as dashboard_router
 
 app = FastAPI(
     title="Tim 4 RAG + MVP Backend",
@@ -14,13 +17,13 @@ app = FastAPI(
     version="0.2.0",
 )
 
+# Izinkan frontend akses backend (CORS)
+origins = [settings.app_referer] if settings.app_env == "production" else ["*"]
+
 # CORS harus didaftarkan SEBELUM router agar header terbawa ke semua endpoint
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,6 +32,8 @@ app.add_middleware(
 app.include_router(tim2_router)
 app.include_router(tim3_router)
 app.include_router(orchestrator_router)
+app.include_router(workflow_router)
+app.include_router(dashboard_router)
 
 
 @app.get("/health", tags=["System"])
