@@ -3,7 +3,7 @@ import asyncio
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -32,11 +32,10 @@ crawl_router = APIRouter(prefix="/crawlers", tags=["crawlers"])
 @crawl_router.post("/trigger", response_model=CrawlTriggerResponse)
 async def trigger_crawl(
     body: CrawlTriggerRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Trigger a crawl batch. Runs in background; returns batch_id immediately.
+    Trigger a crawl batch. Runs concurrently; returns batch_id immediately.
     Set dry_run=true to simulate without writing to DB.
     """
     keywords = await repo.get_active_keywords(db)
@@ -45,15 +44,15 @@ async def trigger_crawl(
     if keyword_count == 0:
         raise HTTPException(status_code=422, detail="No active keywords found. Add keywords first.")
 
-    # Kick off async batch in background
-    background_tasks.add_task(
-        run_batch,
-        target_platform=body.platform,
-        dry_run=body.dry_run,
-    )
-
     from app.services.crawl_service import make_batch_id
     batch_id = make_batch_id()
+
+    # Schedule batch as a concurrent asyncio Task — shares the same event loop
+    # and asyncpg connection pool, but doesn't block request handling.
+    asyncio.create_task(
+        run_batch(target_platform=body.platform, dry_run=body.dry_run, batch_id=batch_id),
+        name=f"crawl-{batch_id}",
+    )
 
     return CrawlTriggerResponse(
         batch_id=batch_id,
